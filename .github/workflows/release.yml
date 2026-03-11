@@ -8,22 +8,30 @@ on:
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - name: macOS ARM64
+            os: macos-latest
             goos: darwin
             goarch: arm64
             asset: iperf3web-darwin-arm64
+            archive: iperf3web-darwin-arm64.tar.gz
+
           - name: Linux x64
+            os: ubuntu-latest
             goos: linux
             goarch: amd64
             asset: iperf3web-linux-amd64
+            archive: iperf3web-linux-amd64.tar.gz
+
           - name: Windows x64
+            os: windows-latest
             goos: windows
             goarch: amd64
             asset: iperf3web-windows-amd64.exe
+            archive: iperf3web-windows-amd64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -32,17 +40,48 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install iperf3 (macOS)
+        if: matrix.goos == 'darwin'
+        run: |
+          brew install iperf3
+          mkdir -p embedded
+          cp "$(brew --prefix)/bin/iperf3" embedded/iperf3-darwin-arm64
+
+      - name: Install iperf3 (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          mkdir -p embedded
+          curl -fsSL https://github.com/userdocs/iperf3-static/releases/latest/download/iperf3-amd64 \
+            -o embedded/iperf3-linux-amd64
+          chmod +x embedded/iperf3-linux-amd64
+
+      - name: Install iperf3 (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          choco install iperf3 --no-progress -y
+          New-Item -ItemType Directory -Force -Path embedded
+          $bin = Get-ChildItem "$env:ChocolateyInstall\lib" -Recurse -Filter "iperf3.exe" |
+                   Select-Object -First 1
+          Copy-Item $bin.FullName embedded\iperf3-windows-amd64.exe
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ${{ matrix.asset }} .
+        run: go build -tags release -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ${{ matrix.asset }} .
+
+      - name: Package (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          chmod +x ${{ matrix.asset }}
+          tar czf ${{ matrix.archive }} ${{ matrix.asset }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
 
   release:
     name: Publish Release
@@ -60,7 +99,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            iperf3web-darwin-arm64
-            iperf3web-linux-amd64
+            iperf3web-darwin-arm64.tar.gz
+            iperf3web-linux-amd64.tar.gz
             iperf3web-windows-amd64.exe
           generate_release_notes: true

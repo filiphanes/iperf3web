@@ -14,18 +14,22 @@ import (
 
 // TestParams holds all configurable iperf3 options.
 type TestParams struct {
-	Server    string `json:"server"`
-	Port      int    `json:"port"`
-	Protocol  string `json:"protocol"`  // "tcp" | "udp"
-	Direction string `json:"direction"` // "upload" | "download"
-	Duration  int    `json:"duration"`
-	Parallel  int    `json:"parallel"`
-	Bandwidth string `json:"bandwidth"` // e.g. "100M", "" for unlimited/default
-	Window    string `json:"window"`    // e.g. "256K"
-	MSS       int    `json:"mss"`
-	NoDelay   bool   `json:"no_delay"`
-	IPv6      bool   `json:"ipv6"`
-	OmitSecs  int    `json:"omit_secs"`
+	Server         string `json:"server"`
+	Port           int    `json:"port"`
+	Protocol       string `json:"protocol"`        // "tcp" | "udp"
+	Direction      string `json:"direction"`       // "upload" | "download" | "bidir"
+	Duration       int    `json:"duration"`
+	Parallel       int    `json:"parallel"`
+	Bandwidth      string `json:"bandwidth"`       // e.g. "100M", "" for unlimited/default
+	Window         string `json:"window"`          // e.g. "256K"
+	Length         string `json:"length"`          // e.g. "128K" socket buffer/payload length
+	MSS            int    `json:"mss"`
+	NoDelay        bool   `json:"no_delay"`
+	IPv4           bool   `json:"ipv4"`            // force IPv4 (-4)
+	IPv6           bool   `json:"ipv6"`            // force IPv6 (-6)
+	OmitSecs       int    `json:"omit_secs"`
+	ZeroCopy       bool   `json:"zero_copy"`       // use zero-copy send (-Z)
+	ConnectTimeout int    `json:"connect_timeout"` // connection setup timeout in ms (0=default)
 }
 
 // SSEMsg is sent to all SSE subscribers.
@@ -140,6 +144,8 @@ func buildArgs(p TestParams) []string {
 	}
 	if p.Direction == "download" {
 		args = append(args, "-R")
+	} else if p.Direction == "bidir" {
+		args = append(args, "--bidir")
 	}
 	if p.Parallel > 1 {
 		args = append(args, "-P", strconv.Itoa(p.Parallel))
@@ -147,19 +153,52 @@ func buildArgs(p TestParams) []string {
 	if p.Window != "" {
 		args = append(args, "-w", p.Window)
 	}
+	if p.Length != "" {
+		args = append(args, "-l", p.Length)
+	}
 	if p.MSS > 0 {
 		args = append(args, "-M", strconv.Itoa(p.MSS))
 	}
 	if p.NoDelay {
 		args = append(args, "-N")
 	}
-	if p.IPv6 {
+	if p.IPv4 {
+		args = append(args, "-4")
+	} else if p.IPv6 {
 		args = append(args, "-6")
 	}
 	if p.OmitSecs > 0 {
 		args = append(args, "-O", strconv.Itoa(p.OmitSecs))
 	}
+	if p.ZeroCopy {
+		args = append(args, "-Z")
+	}
+	if p.ConnectTimeout > 0 {
+		args = append(args, "--connect-timeout", strconv.Itoa(p.ConnectTimeout))
+	}
 	return args
+}
+
+// cleanStderr turns raw iperf3 stderr into a short, user-friendly message.
+func cleanStderr(s string) string {
+	s = strings.TrimSpace(s)
+	// Strip common "iperf3: error - " prefix
+	s = strings.TrimPrefix(s, "iperf3: error - ")
+	// Map known patterns to friendlier text
+	sl := strings.ToLower(s)
+	switch {
+	case strings.Contains(sl, "connection refused"):
+		return "Connection refused — is iperf3 running on the server?"
+	case strings.Contains(sl, "connection timed out") || strings.Contains(sl, "timed out"):
+		return "Connection timed out — server unreachable or firewall blocking port"
+	case strings.Contains(sl, "no route to host"):
+		return "No route to host — check server address"
+	case strings.Contains(sl, "name or service not known") || strings.Contains(sl, "nodename nor servname"):
+		return "Hostname not found — check server address"
+	case strings.Contains(sl, "busy"):
+		return "Server is busy running another test — try again later"
+	}
+	return s
 }
 
 func (r *Runner) run(ctx context.Context, params TestParams, onDone func(testDone)) {
@@ -174,10 +213,11 @@ func (r *Runner) run(ctx context.Context, params TestParams, onDone func(testDon
 		r.mu.Unlock()
 	}()
 
+	exe := iperf3Executable()
 	args := buildArgs(params)
 	log.Printf("Running: iperf3 %s", strings.Join(args, " "))
 
-	cmd := exec.CommandContext(ctx, "iperf3", args...)
+	cmd := exec.CommandContext(ctx, exe, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		r.broadcast(SSEMsg{Type: "error", Payload: err.Error()})
@@ -207,6 +247,7 @@ func (r *Runner) run(ctx context.Context, params TestParams, onDone func(testDon
 
 	var intervals []float64
 	var endData *EndData
+	var jsonErrMsg string
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1 MB for large end events
@@ -240,6 +281,7 @@ func (r *Runner) run(ctx context.Context, params TestParams, onDone func(testDon
 		case "error":
 			var msg string
 			json.Unmarshal(event.Data, &msg)
+			jsonErrMsg = msg
 			r.broadcast(SSEMsg{Type: "error", Payload: msg})
 		}
 	}
@@ -249,8 +291,14 @@ func (r *Runner) run(ctx context.Context, params TestParams, onDone func(testDon
 
 	done := testDone{params: params, end: endData, intervals: intervals}
 	if endData == nil {
-		done.errStr = stderrMsg
-		if done.errStr == "" {
+		switch {
+		case jsonErrMsg != "":
+			// Already broadcast above; just record it.
+			done.errStr = jsonErrMsg
+		case stderrMsg != "":
+			done.errStr = cleanStderr(stderrMsg)
+			r.broadcast(SSEMsg{Type: "error", Payload: done.errStr})
+		default:
 			done.errStr = "test ended with no results (was it cancelled?)"
 		}
 	}

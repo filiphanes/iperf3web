@@ -127,6 +127,8 @@
                   <label class="btn btn-sm btn-outline-info" for="dir-up"><i class="bi bi-arrow-up"></i> Up</label>
                   <input type="radio" class="btn-check" name="direction" id="dir-dn" value="download">
                   <label class="btn btn-sm btn-outline-info" for="dir-dn"><i class="bi bi-arrow-down"></i> Down</label>
+                  <input type="radio" class="btn-check" name="direction" id="dir-bidir" value="bidir">
+                  <label class="btn btn-sm btn-outline-info" for="dir-bidir"><i class="bi bi-arrow-down-up"></i></label>
                 </div>
               </div>
             </div>
@@ -150,8 +152,18 @@
             <div class="mb-3">
               <div class="section-title">Bandwidth Limit</div>
               <div class="slider-row">
-                <input type="range" class="form-range" id="bandwidth" min="0" max="2600" value="0" step="10">
-                <span class="slider-val" id="bandwidth-label">unlimited</span>
+                <input type="range" class="form-range" id="bandwidth" min="0" max="2600" value="10" step="10">
+                <span class="slider-val" id="bandwidth-label">10 Mbps</span>
+              </div>
+            </div>
+
+            <div class="mb-3" id="udp-opts" style="display:none">
+              <div class="section-title">UDP Packet Size</div>
+              <div class="input-group input-group-sm">
+                <input type="number" id="udp-pkt-size" class="form-control form-control-sm"
+                  min="1" max="65507" placeholder="bytes (default: 1460)"
+                  style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
+                <span class="input-group-text" style="background:#21262d; border-color:#30363d; color:#8b949e">bytes</span>
               </div>
             </div>
 
@@ -177,14 +189,32 @@
                     style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
                 </div>
               </div>
+              <div class="row g-2 mb-2">
+                <div class="col-12">
+                  <label class="form-label" style="font-size:0.75rem;color:#8b949e;margin-bottom:3px">Connect Timeout (ms)</label>
+                  <input type="number" id="connect-timeout" class="form-control form-control-sm" value="0" min="0" placeholder="default"
+                    style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
+                </div>
+              </div>
+              <div class="mb-2">
+                <div class="section-title" style="margin-bottom:4px">IP Version</div>
+                <div class="btn-group w-100">
+                  <input type="radio" class="btn-check" name="ipversion" id="ipv-auto" value="auto" checked>
+                  <label class="btn btn-sm btn-outline-secondary" for="ipv-auto">Auto</label>
+                  <input type="radio" class="btn-check" name="ipversion" id="ipv-4" value="4">
+                  <label class="btn btn-sm btn-outline-secondary" for="ipv-4">IPv4</label>
+                  <input type="radio" class="btn-check" name="ipversion" id="ipv-6" value="6">
+                  <label class="btn btn-sm btn-outline-secondary" for="ipv-6">IPv6</label>
+                </div>
+              </div>
               <div class="d-flex gap-3">
                 <div class="form-check">
                   <input class="form-check-input" type="checkbox" id="no-delay">
                   <label class="form-check-label" for="no-delay" style="font-size:0.8rem">No-Delay</label>
                 </div>
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="ipv6">
-                  <label class="form-check-label" for="ipv6" style="font-size:0.8rem">IPv6</label>
+                  <input class="form-check-input" type="checkbox" id="zero-copy" checked>
+                  <label class="form-check-label" for="zero-copy" style="font-size:0.8rem">Zero-copy</label>
                 </div>
               </div>
             </div>
@@ -572,19 +602,24 @@ function buildMeasurementPane(e) {
   const peakMbps = hasChart ? Math.max(...e.intervals.map(b => b/1e6)).toFixed(2) : '—';
   const avgMbps  = hasChart ? (e.intervals.reduce((a,b)=>a+b,0)/e.intervals.length/1e6).toFixed(2) : '—';
 
+  const ipvStr = p.ipv4 ? 'IPv4 only' : (p.ipv6 ? 'IPv6 only' : null);
+  const dirLabel = p.direction === 'bidir' ? '↑↓ Bidirectional' : dir;
   const settingRows = [
     ['Server',    p.server],
     ['Port',      p.port || 5201],
     ['Protocol',  `<span class="badge ${isUdp ? 'bg-warning text-dark' : 'bg-primary'}">${proto}</span>`],
-    ['Direction', dir],
+    ['Direction', dirLabel],
     ['Duration',  dur],
     ['Streams',   p.parallel || 1],
     ['Bandwidth', bwStr],
-    ...(p.omit_secs ? [['Omit', p.omit_secs + 's']] : []),
-    ...(p.window    ? [['Window', p.window]]         : []),
-    ...(p.mss       ? [['MSS', p.mss]]               : []),
-    ...(p.no_delay  ? [['No-Delay', '✓']]            : []),
-    ...(p.ipv6      ? [['IPv6', '✓']]                : []),
+    ...(p.omit_secs        ? [['Omit', p.omit_secs + 's']]           : []),
+    ...(p.window           ? [['Window', p.window]]                  : []),
+    ...(p.length           ? [[isUdp ? 'Pkt Size' : 'Buffer Len', isUdp ? p.length + ' B' : p.length]] : []),
+    ...(p.mss              ? [['MSS', p.mss]]                        : []),
+    ...(p.connect_timeout  ? [['Conn Timeout', p.connect_timeout + ' ms']] : []),
+    ...(ipvStr             ? [['IP Version', ipvStr]]                : []),
+    ...(p.no_delay         ? [['No-Delay', '✓']]                    : []),
+    ...(p.zero_copy        ? [['Zero-copy', '✓']]                   : []),
   ];
 
   return `<div class="row g-3">
@@ -707,7 +742,9 @@ function recallSettings(id) {
 
   const pe = document.getElementById(p.protocol === 'udp' ? 'proto-udp' : 'proto-tcp');
   if (pe) pe.checked = true;
-  const de = document.getElementById(p.direction === 'download' ? 'dir-dn' : 'dir-up');
+  document.getElementById('udp-opts').style.display = p.protocol === 'udp' ? '' : 'none';
+  const dirMap = { download: 'dir-dn', bidir: 'dir-bidir' };
+  const de = document.getElementById(dirMap[p.direction] || 'dir-up');
   if (de) de.checked = true;
 
   setSlider('duration',  p.duration  || 10);
@@ -715,10 +752,15 @@ function recallSettings(id) {
   setSlider('omit-secs', p.omit_secs || 0);
   setSlider('bandwidth', parseBandwidthToMbps(p.bandwidth || ''));
 
-  document.getElementById('window').value     = p.window   || '';
-  document.getElementById('mss').value        = p.mss      || 0;
-  document.getElementById('no-delay').checked = !!p.no_delay;
-  document.getElementById('ipv6').checked     = !!p.ipv6;
+  document.getElementById('window').value          = p.window          || '';
+  document.getElementById('udp-pkt-size').value    = p.length          || '';
+  document.getElementById('mss').value             = p.mss             || 0;
+  document.getElementById('connect-timeout').value = p.connect_timeout || 0;
+  document.getElementById('no-delay').checked      = !!p.no_delay;
+  document.getElementById('zero-copy').checked     = !!p.zero_copy;
+  const ipv = p.ipv4 ? '4' : (p.ipv6 ? '6' : 'auto');
+  const ipvEl = document.getElementById('ipv-' + ipv);
+  if (ipvEl) ipvEl.checked = true;
 
   saveFormState();
 }
@@ -804,19 +846,26 @@ function getFormParams() {
     const parts = sel.value.split(':');
     server = parts[0]; port = parseInt(parts[1]) || port;
   }
-  const bwVal = parseInt(document.getElementById('bandwidth').value) || 0;
+  const bwVal    = parseInt(document.getElementById('bandwidth').value) || 0;
+  const ipv      = document.querySelector('input[name="ipversion"]:checked')?.value || 'auto';
+  const protocol = document.querySelector('input[name="protocol"]:checked')?.value || 'tcp';
+  const pktSize  = document.getElementById('udp-pkt-size').value;
   return {
     server, port,
-    protocol:  document.querySelector('input[name="protocol"]:checked')?.value || 'tcp',
-    direction: document.querySelector('input[name="direction"]:checked')?.value || 'upload',
-    duration:  parseInt(document.getElementById('duration').value)  || 10,
-    parallel:  parseInt(document.getElementById('parallel').value)  || 1,
-    bandwidth: bwVal > 0 ? bwVal + 'M' : '',
-    window:    document.getElementById('window').value.trim(),
-    mss:       parseInt(document.getElementById('mss').value) || 0,
-    no_delay:  document.getElementById('no-delay').checked,
-    ipv6:      document.getElementById('ipv6').checked,
-    omit_secs: parseInt(document.getElementById('omit-secs').value) || 0,
+    protocol,
+    direction:       document.querySelector('input[name="direction"]:checked')?.value || 'upload',
+    duration:        parseInt(document.getElementById('duration').value)  || 10,
+    parallel:        parseInt(document.getElementById('parallel').value)  || 1,
+    bandwidth:       bwVal > 0 ? bwVal + 'M' : '',
+    window:          document.getElementById('window').value.trim(),
+    length:          protocol === 'udp' && pktSize ? pktSize : '',
+    mss:             parseInt(document.getElementById('mss').value) || 0,
+    no_delay:        document.getElementById('no-delay').checked,
+    ipv4:            ipv === '4',
+    ipv6:            ipv === '6',
+    omit_secs:       parseInt(document.getElementById('omit-secs').value) || 0,
+    zero_copy:       document.getElementById('zero-copy').checked,
+    connect_timeout: parseInt(document.getElementById('connect-timeout').value) || 0,
   };
 }
 
@@ -832,16 +881,22 @@ function restoreFormState() {
     if (saved.parallel  !== undefined) setSlider('parallel',  saved.parallel);
     if (saved.omit_secs !== undefined) setSlider('omit-secs', saved.omit_secs);
     setSlider('bandwidth', parseBandwidthToMbps(saved.bandwidth || ''));
-    if (saved.window)   document.getElementById('window').value     = saved.window;
-    if (saved.mss)      document.getElementById('mss').value        = saved.mss;
-    if (saved.no_delay) document.getElementById('no-delay').checked = true;
-    if (saved.ipv6)     document.getElementById('ipv6').checked     = true;
+    if (saved.window)          document.getElementById('window').value           = saved.window;
+    if (saved.length)          document.getElementById('udp-pkt-size').value     = saved.length;
+    if (saved.mss)             document.getElementById('mss').value              = saved.mss;
+    if (saved.connect_timeout) document.getElementById('connect-timeout').value  = saved.connect_timeout;
+    if (saved.no_delay)        document.getElementById('no-delay').checked       = true;
+    if (saved.zero_copy)       document.getElementById('zero-copy').checked      = true;
+    const ipv = saved.ipv4 ? '4' : (saved.ipv6 ? '6' : 'auto');
+    const ipvEl = document.getElementById('ipv-' + ipv);
+    if (ipvEl) ipvEl.checked = true;
     if (saved.protocol) {
       const el = document.getElementById(saved.protocol === 'udp' ? 'proto-udp' : 'proto-tcp');
       if (el) el.checked = true;
     }
     if (saved.direction) {
-      const el = document.getElementById(saved.direction === 'download' ? 'dir-dn' : 'dir-up');
+      const dirMap = { download: 'dir-dn', bidir: 'dir-bidir' };
+      const el = document.getElementById(dirMap[saved.direction] || 'dir-up');
       if (el) el.checked = true;
     }
   } catch(_) {}
@@ -876,6 +931,12 @@ function show(id) { const el = document.getElementById(id); if (el) el.style.dis
 function hide(id) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
 
 // ─── Form events ──────────────────────────────────────────────────────────────
+document.querySelectorAll('input[name="protocol"]').forEach(el => {
+  el.addEventListener('change', function() {
+    document.getElementById('udp-opts').style.display = this.value === 'udp' ? '' : 'none';
+  });
+});
+
 document.getElementById('server-select').addEventListener('change', function() {
   const ci = document.getElementById('custom-server');
   if (this.value === '__custom__') {
@@ -910,7 +971,6 @@ document.getElementById('btn-run').addEventListener('click', async () => {
   setRunning(true);
   switchTab('run');
   hide('idle-placeholder'); hide('result-card');
-  document.getElementById('terminal').innerHTML = '';
 });
 
 document.getElementById('btn-stop').addEventListener('click', async () => {
@@ -921,6 +981,9 @@ document.getElementById('btn-stop').addEventListener('click', async () => {
 (async () => {
   await loadServers();
   restoreFormState();
+  // Sync protocol-dependent visibility after state restore
+  const proto = document.querySelector('input[name="protocol"]:checked')?.value;
+  document.getElementById('udp-opts').style.display = proto === 'udp' ? '' : 'none';
   await loadHistory();
   connectSSE();
 })();
