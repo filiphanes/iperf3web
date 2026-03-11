@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>iperf3 Web GUI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    body { min-height: 100vh; background: #0d1117; }
+    .navbar-brand { font-weight: 700; letter-spacing: -0.5px; }
+
+    /* Scrollable main tab bar */
+    #main-tabs {
+      flex-wrap: nowrap !important;
+      overflow-x: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #30363d transparent;
+      -webkit-overflow-scrolling: touch;
+    }
+    #main-tabs::-webkit-scrollbar { height: 3px; }
+    #main-tabs::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+    /* History measurement tabs */
+    .hist-nav-link {
+      white-space: nowrap;
+      font-size: 0.8rem;
+      display: flex !important;
+      align-items: center;
+      gap: 4px;
+      padding-right: 8px !important;
+    }
+    .hist-tab-server { font-weight: 600; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .hist-tab-time   { color: #6e7681; font-size: 0.7rem; }
+    .hist-nav-link.active .hist-tab-time { color: #8b949e; }
+    .hist-tab-close  {
+      opacity: 0.4; font-size: 1rem; line-height: 1; cursor: pointer;
+      padding: 1px 3px; border-radius: 3px; margin-left: 1px;
+      transition: opacity 0.1s, background 0.1s, color 0.1s;
+      user-select: none;
+    }
+    .hist-tab-close:hover { opacity: 1; background: rgba(248,81,73,0.2); color: #f85149; }
+
+    /* Cards and stat blocks */
+    .stat-card { border-radius: 12px; text-align: center; padding: 12px 16px; background: #161b22; border: 1px solid #30363d; }
+    .stat-value { font-size: 2rem; font-weight: 700; line-height: 1.1; }
+    .stat-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-unit  { font-size: 0.85rem; color: #8b949e; }
+    .result-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; }
+
+    /* Progress */
+    .progress-thin { height: 4px; border-radius: 2px; margin-top: 6px; }
+
+    /* Sliders */
+    .section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: #8b949e; margin-bottom: 6px; }
+    .slider-row { display: flex; align-items: center; gap: 8px; }
+    .slider-row input[type=range] { flex: 1; }
+    .slider-val { min-width: 64px; text-align: right; font-size: 0.82rem; color: #c9d1d9; font-variant-numeric: tabular-nums; }
+
+    /* Misc */
+    .alert-error { background: #2d1115; border-color: #6e211a; color: #ff7b72; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulsing { animation: pulse 1.5s ease-in-out infinite; }
+    .chart-wrap { position: relative; height: 240px; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#161b22; border-bottom:1px solid #30363d;">
+  <div class="container-fluid">
+    <span class="navbar-brand">
+      <i class="bi bi-speedometer2 me-2" style="color:#58a6ff"></i>iperf3 Web GUI
+    </span>
+    <span id="status-badge" class="badge bg-secondary">Idle</span>
+  </div>
+</nav>
+
+<div class="container-fluid py-3" style="max-width:1400px">
+
+  <!-- Main tab nav (Run Test + one tab per completed measurement) -->
+  <ul class="nav nav-tabs mb-3" id="main-tabs">
+    <li class="nav-item flex-shrink-0">
+      <a class="nav-link active" href="#" data-tab="run">
+        <i class="bi bi-play-circle me-1"></i>Run Test
+      </a>
+    </li>
+    <!-- history tabs injected here by JS -->
+  </ul>
+
+  <!-- ═══════════════ RUN TEST PANE ═══════════════ -->
+  <div id="pane-run">
+    <div class="row g-3">
+
+      <!-- LEFT: Config -->
+      <div class="col-lg-4">
+        <div class="card h-100" style="background:#161b22; border-color:#30363d">
+          <div class="card-body d-flex flex-column">
+
+            <div class="mb-3">
+              <div class="section-title">Server</div>
+              <select id="server-select" class="form-select form-select-sm mb-2"
+                style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
+                <option value="">Loading…</option>
+              </select>
+              <input type="text" id="custom-server" class="form-control form-control-sm"
+                placeholder="hostname / IP" style="background:#0d1117; border-color:#30363d; color:#c9d1d9; display:none">
+              <input type="number" id="port" class="form-control form-control-sm mt-2"
+                placeholder="Port" value="5201" min="1" max="65535"
+                style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
+            </div>
+
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <div class="section-title">Protocol</div>
+                <div class="btn-group w-100">
+                  <input type="radio" class="btn-check" name="protocol" id="proto-tcp" value="tcp" checked>
+                  <label class="btn btn-sm btn-outline-primary" for="proto-tcp">TCP</label>
+                  <input type="radio" class="btn-check" name="protocol" id="proto-udp" value="udp">
+                  <label class="btn btn-sm btn-outline-primary" for="proto-udp">UDP</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="section-title">Direction</div>
+                <div class="btn-group w-100">
+                  <input type="radio" class="btn-check" name="direction" id="dir-up" value="upload" checked>
+                  <label class="btn btn-sm btn-outline-info" for="dir-up"><i class="bi bi-arrow-up"></i> Up</label>
+                  <input type="radio" class="btn-check" name="direction" id="dir-dn" value="download">
+                  <label class="btn btn-sm btn-outline-info" for="dir-dn"><i class="bi bi-arrow-down"></i> Down</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="section-title">Duration</div>
+              <div class="slider-row">
+                <input type="range" class="form-range" id="duration" min="3" max="120" value="10" step="1">
+                <span class="slider-val"><span id="duration-label">10</span>s</span>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="section-title">Parallel Streams</div>
+              <div class="slider-row">
+                <input type="range" class="form-range" id="parallel" min="1" max="16" value="1" step="1">
+                <span class="slider-val" id="parallel-label">1</span>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="section-title">Bandwidth Limit</div>
+              <div class="slider-row">
+                <input type="range" class="form-range" id="bandwidth" min="0" max="2600" value="0" step="10">
+                <span class="slider-val" id="bandwidth-label">unlimited</span>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="section-title">Omit First (warm-up)</div>
+              <div class="slider-row">
+                <input type="range" class="form-range" id="omit-secs" min="0" max="10" value="0" step="1">
+                <span class="slider-val"><span id="omit-label">0</span>s</span>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="section-title">Advanced</div>
+              <div class="row g-2 mb-2">
+                <div class="col-6">
+                  <label class="form-label" style="font-size:0.75rem;color:#8b949e;margin-bottom:3px">TCP Window</label>
+                  <input type="text" id="window" class="form-control form-control-sm" placeholder="e.g. 256K"
+                    style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
+                </div>
+                <div class="col-6">
+                  <label class="form-label" style="font-size:0.75rem;color:#8b949e;margin-bottom:3px">MSS (0=auto)</label>
+                  <input type="number" id="mss" class="form-control form-control-sm" value="0" min="0"
+                    style="background:#0d1117; border-color:#30363d; color:#c9d1d9">
+                </div>
+              </div>
+              <div class="d-flex gap-3">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="no-delay">
+                  <label class="form-check-label" for="no-delay" style="font-size:0.8rem">No-Delay</label>
+                </div>
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="ipv6">
+                  <label class="form-check-label" for="ipv6" style="font-size:0.8rem">IPv6</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="d-grid gap-2 mt-auto">
+              <button id="btn-run" class="btn btn-success">
+                <i class="bi bi-play-fill me-1"></i>Run Test
+              </button>
+              <button id="btn-stop" class="btn btn-danger" disabled>
+                <i class="bi bi-stop-fill me-1"></i>Stop
+              </button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Live panel -->
+      <div class="col-lg-8">
+        <div id="error-banner" class="alert alert-error mb-3" style="display:none; border-radius:8px"></div>
+
+        <div id="stats-row" class="row g-2 mb-3" style="display:none">
+          <div class="col-6 col-md-3"><div class="stat-card">
+            <div class="stat-value text-success" id="stat-current">—</div>
+            <div class="stat-unit">Mbps</div><div class="stat-label">Current</div>
+          </div></div>
+          <div class="col-6 col-md-3"><div class="stat-card">
+            <div class="stat-value text-info" id="stat-avg">—</div>
+            <div class="stat-unit">Mbps</div><div class="stat-label">Average</div>
+          </div></div>
+          <div class="col-6 col-md-3"><div class="stat-card">
+            <div class="stat-value text-warning" id="stat-peak">—</div>
+            <div class="stat-unit">Mbps</div><div class="stat-label">Peak</div>
+          </div></div>
+          <div class="col-6 col-md-3" id="udp-stat-card" style="display:none"><div class="stat-card">
+            <div class="stat-value text-danger" id="stat-loss">—</div>
+            <div class="stat-unit">% / <span id="stat-jitter">—</span>ms</div>
+            <div class="stat-label">Loss / Jitter</div>
+          </div></div>
+        </div>
+
+        <div id="progress-wrap" style="display:none" class="mb-3">
+          <div class="d-flex justify-content-between mb-1" style="font-size:0.78rem;color:#8b949e">
+            <span id="progress-label" class="pulsing">Connecting…</span>
+            <span id="progress-time"></span>
+          </div>
+          <div class="progress progress-thin">
+            <div id="progress-bar" class="progress-bar bg-success progress-bar-striped progress-bar-animated" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="card mb-3" style="background:#161b22; border-color:#30363d; display:none" id="chart-card">
+          <div class="card-body py-2">
+            <div class="chart-wrap"><canvas id="live-chart"></canvas></div>
+          </div>
+        </div>
+
+        <div id="result-card" class="result-card p-3" style="display:none">
+          <div class="section-title mb-2">Result</div>
+          <div id="result-content"></div>
+        </div>
+
+        <div id="idle-placeholder" class="text-center py-5" style="color:#8b949e">
+          <i class="bi bi-speedometer2" style="font-size:4rem;opacity:0.3"></i>
+          <p class="mt-3">Configure a test and click <strong>Run Test</strong></p>
+        </div>
+      </div>
+    </div>
+  </div><!-- /pane-run -->
+
+  <!-- Measurement panes injected here (one per history entry) -->
+  <div id="hist-panes"></div>
+
+</div><!-- /container -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+'use strict';
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let sse = null, liveChart = null;
+let publicServerList = [];
+let histCharts = {};
+let testRunning = false, testParams = null, testStart = null, testDuration = 0;
+let intervals = [], timerInterval = null;
+let historyEntries = [], histEntryById = {};
+let activeTab = 'run';
+
+// ─── SSE ──────────────────────────────────────────────────────────────────────
+function connectSSE() {
+  if (sse) sse.close();
+  sse = new EventSource('/api/test/stream');
+  sse.onmessage = e => { try { handleMsg(JSON.parse(e.data)); } catch(_) {} };
+  sse.onerror   = () => { setTimeout(connectSSE, 2000); };
+}
+
+function handleMsg(msg) {
+  switch (msg.type) {
+    case 'status':   if (msg.payload.running) { testParams = msg.payload.params; setRunning(true); } break;
+    case 'start':    onStart(msg.payload);    break;
+    case 'interval': onInterval(msg.payload); break;
+    case 'end':      onEnd(msg.payload);      break;
+    case 'error':    showError(msg.payload);  break;
+    case 'done':     onDone();                break;
+  }
+}
+
+// ─── Test lifecycle ───────────────────────────────────────────────────────────
+function setRunning(running) {
+  testRunning = running;
+  document.getElementById('btn-run').disabled  = running;
+  document.getElementById('btn-stop').disabled = !running;
+  document.getElementById('status-badge').textContent = running ? 'Running' : 'Idle';
+  document.getElementById('status-badge').className   = running ? 'badge bg-success pulsing' : 'badge bg-secondary';
+}
+
+function onStart(data) {
+  clearError();
+  intervals = [];
+  testStart    = Date.now();
+  testDuration = testParams?.duration || 10;
+  const isUdp  = testParams?.protocol === 'udp';
+
+  show('stats-row'); show('progress-wrap'); show('chart-card');
+  hide('idle-placeholder'); hide('result-card');
+  if (isUdp) show('udp-stat-card'); else hide('udp-stat-card');
+  initLiveChart();
+  clearInterval(timerInterval);
+  timerInterval = setInterval(updateProgress, 200);
+}
+
+function onInterval(data) {
+  const sum = data.sum;
+  if (!sum) return;
+  const mbps = sum.bits_per_second / 1e6;
+  if (!sum.omitted) { intervals.push(mbps); updateStats(mbps, sum); updateLiveChart(sum); }
+}
+
+function onEnd(data) {
+  clearInterval(timerInterval);
+  hide('progress-wrap');
+  const sent = data.sum_sent, recv = data.sum_received, cpu = data.cpu_utilization_percent;
+  const fm = bps => (bps / 1e6).toFixed(2);
+  const fb = b   => b >= 1e9 ? (b/1e9).toFixed(2)+' GB' : (b/1e6).toFixed(1)+' MB';
+  const isUdp = testParams?.protocol === 'udp';
+  document.getElementById('result-content').innerHTML = `
+    <div class="row g-3">
+      <div class="col-md-6"><table class="table table-sm table-dark mb-0"><tbody>
+        <tr><td class="text-muted">Send</td><td class="text-success fw-bold">${fm(sent.bits_per_second)} Mbps</td><td class="text-muted">${fb(sent.bytes)}</td></tr>
+        <tr><td class="text-muted">Receive</td><td class="text-info fw-bold">${fm(recv.bits_per_second)} Mbps</td><td class="text-muted">${fb(recv.bytes)}</td></tr>
+        ${isUdp ? `<tr><td class="text-muted">Jitter</td><td class="text-warning">${recv.jitter_ms?.toFixed(3)||'—'} ms</td><td></td></tr>
+        <tr><td class="text-muted">Pkt Loss</td><td class="text-danger">${recv.lost_percent?.toFixed(2)||'—'}%</td><td class="text-muted">${recv.lost_packets||0}/${recv.packets||0}</td></tr>` : ''}
+      </tbody></table></div>
+      <div class="col-md-6"><table class="table table-sm table-dark mb-0"><tbody>
+        <tr><td class="text-muted">Duration</td><td>${sent.end?.toFixed(1)||'—'}s</td></tr>
+        <tr><td class="text-muted">CPU local</td><td>${cpu ? cpu.host_total.toFixed(1)+'%' : '—'}</td></tr>
+        <tr><td class="text-muted">CPU remote</td><td>${cpu ? cpu.remote_total.toFixed(1)+'%' : '—'}</td></tr>
+      </tbody></table></div>
+    </div>`;
+  show('result-card');
+}
+
+async function onDone() {
+  setRunning(false);
+  clearInterval(timerInterval);
+  hide('progress-wrap');
+  const prevCount = historyEntries.length;
+  await loadHistory(); // rebuilds tabs
+  // Auto-switch to newly added measurement tab
+  if (historyEntries.length > prevCount) {
+    switchTab(historyEntries[0].id);
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  el.textContent = '⚠ ' + (typeof msg === 'string' ? msg : JSON.stringify(msg));
+  el.style.display = 'block';
+}
+function clearError() { document.getElementById('error-banner').style.display = 'none'; }
+
+// ─── Live stats ────────────────────────────────────────────────────────────────
+function updateStats(mbps, sum) {
+  document.getElementById('stat-current').textContent = mbps.toFixed(1);
+  document.getElementById('stat-avg').textContent = (intervals.reduce((a,b)=>a+b,0)/intervals.length).toFixed(1);
+  document.getElementById('stat-peak').textContent = Math.max(...intervals).toFixed(1);
+  if (sum.lost_percent != null) {
+    document.getElementById('stat-loss').textContent    = sum.lost_percent.toFixed(1);
+    document.getElementById('stat-jitter').textContent  = sum.jitter_ms ? sum.jitter_ms.toFixed(2) : '—';
+  }
+}
+
+function updateProgress() {
+  if (!testStart) return;
+  const elapsed = (Date.now() - testStart) / 1000;
+  document.getElementById('progress-bar').style.width = Math.min(100, elapsed/testDuration*100) + '%';
+  document.getElementById('progress-label').textContent = testRunning ? `Testing → ${testParams?.server||'?'}` : 'Done';
+  document.getElementById('progress-time').textContent  = `${Math.min(elapsed,testDuration).toFixed(0)}s / ${testDuration}s`;
+}
+
+// ─── Live chart ────────────────────────────────────────────────────────────────
+function initLiveChart() {
+  if (liveChart) { liveChart.destroy(); liveChart = null; }
+  liveChart = new Chart(document.getElementById('live-chart'), {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: 'Mbps', data: [],
+        backgroundColor: [], borderColor: '#30363d', borderWidth: 1, borderRadius: 3 },
+      { label: 'avg', data: [], type: 'line',
+        borderColor: '#e3b341', borderWidth: 1.5, borderDash: [4, 3],
+        pointRadius: 0, fill: false }
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => c.dataset.label === 'avg'
+          ? `avg ${c.parsed.y.toFixed(2)} Mbps` : `${c.parsed.y.toFixed(2)} Mbps` } } },
+      scales: {
+        x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
+        y: { beginAtZero: true, grid: { color: '#21262d' }, ticks: { color: '#8b949e' },
+             title: { display: true, text: 'Mbps', color: '#8b949e' } }
+      }
+    }
+  });
+}
+
+function updateLiveChart(sum) {
+  if (!liveChart) return;
+  liveChart.data.labels.push(sum.end.toFixed(1));
+  liveChart.data.datasets[0].data.push(sum.bits_per_second / 1e6);
+  const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+  liveChart.data.datasets[1].data = liveChart.data.labels.map(() => avg);
+  liveChart.data.datasets[0].backgroundColor = liveChart.data.datasets[0].data.map(v =>
+    v >= avg * 1.1 ? 'rgba(63,185,80,0.55)' :
+    v <  avg * 0.9 ? 'rgba(248,81,73,0.45)' :
+                     'rgba(88,166,255,0.45)');
+  liveChart.update('none');
+}
+
+// ─── History / measurement tabs ────────────────────────────────────────────────
+async function loadHistory() {
+  const entries = await apiFetch('/api/history');
+  if (!entries) return;
+  historyEntries = entries;
+  histEntryById  = {};
+  entries.forEach(e => histEntryById[e.id] = e);
+  rebuildServerSelect();
+  rebuildTabs();
+}
+
+function rebuildTabs() {
+  const nav = document.getElementById('main-tabs');
+
+  const histHtml = historyEntries.map(e => {
+    const isActive = activeTab === e.id;
+    const d = new Date(e.timestamp);
+    const timeStr = d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
+                    d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    return `<li class="nav-item flex-shrink-0">
+      <a class="nav-link hist-nav-link${isActive ? ' active' : ''}" href="#" data-tab-id="${e.id}">
+        <span class="hist-tab-server">${e.params.server}</span>
+        <span class="hist-tab-time">${timeStr}</span>
+        <span class="hist-tab-close" data-id="${e.id}" title="Remove">×</span>
+      </a>
+    </li>`;
+  }).join('');
+
+  nav.innerHTML = `
+    <li class="nav-item flex-shrink-0">
+      <a class="nav-link${activeTab === 'run' ? ' active' : ''}" href="#" data-tab="run">
+        <i class="bi bi-play-circle me-1"></i>Run Test
+      </a>
+    </li>
+    ${histHtml}`;
+
+  syncHistPanes();
+  applyActiveTab();
+}
+
+// Create panes for new entries, destroy panes for removed entries
+function syncHistPanes() {
+  const container  = document.getElementById('hist-panes');
+  const existingIds = new Set([...container.querySelectorAll('.hist-pane')].map(p => p.dataset.id));
+  const currentIds  = new Set(historyEntries.map(e => e.id));
+
+  // Remove stale panes
+  container.querySelectorAll('.hist-pane').forEach(p => {
+    if (!currentIds.has(p.dataset.id)) {
+      if (histCharts[p.dataset.id]) { histCharts[p.dataset.id].destroy(); delete histCharts[p.dataset.id]; }
+      p.remove();
+    }
+  });
+
+  // Add panes for new entries (newest prepended)
+  [...historyEntries].reverse().forEach(e => {
+    if (!existingIds.has(e.id)) {
+      const pane = document.createElement('div');
+      pane.className  = 'hist-pane';
+      pane.dataset.id = e.id;
+      pane.style.display = 'none';
+      pane.innerHTML  = buildMeasurementPane(e);
+      container.prepend(pane);
+    }
+  });
+}
+
+function applyActiveTab() {
+  document.getElementById('pane-run').style.display = activeTab === 'run' ? '' : 'none';
+  document.querySelectorAll('.hist-pane').forEach(p => {
+    const visible = p.dataset.id === activeTab;
+    p.style.display = visible ? '' : 'none';
+    if (visible) initHistChart(p.dataset.id);
+  });
+  // Scroll the active tab button into view
+  const activeBtn = document.querySelector(
+    activeTab === 'run' ? '#main-tabs [data-tab="run"]' : `#main-tabs [data-tab-id="${activeTab}"]`);
+  if (activeBtn) activeBtn.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
+}
+
+function switchTab(id) {
+  if (activeTab === id) return;
+  activeTab = id;
+  document.querySelectorAll('#main-tabs .nav-link').forEach(a => {
+    const isMatch = (id === 'run' && a.dataset.tab === 'run') ||
+                    (a.dataset.tabId === id);
+    a.classList.toggle('active', isMatch);
+  });
+  applyActiveTab();
+}
+
+// Lazy chart initialisation — called when a measurement pane first becomes visible
+function initHistChart(id) {
+  if (histCharts[id]) return;
+  const entry = histEntryById[id];
+  if (!entry?.intervals?.length) return;
+  const canvas = document.getElementById(`hchart-${id}`);
+  if (!canvas) return;
+
+  const data = entry.intervals.map(b => b / 1e6);
+  const avg  = data.reduce((a, b) => a + b, 0) / data.length;
+
+  histCharts[id] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: data.map((_, i) => i + 1),
+      datasets: [
+        { label: 'Mbps', data,
+          backgroundColor: data.map(v => v >= avg * 1.1 ? 'rgba(63,185,80,0.55)' :
+                                         v <  avg * 0.9 ? 'rgba(248,81,73,0.45)' :
+                                                          'rgba(88,166,255,0.45)'),
+          borderColor: '#30363d', borderWidth: 1, borderRadius: 3 },
+        { label: 'avg', data: data.map(() => avg), type: 'line',
+          borderColor: '#e3b341', borderWidth: 1.5, borderDash: [4, 3],
+          pointRadius: 0, fill: false }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => c.dataset.label === 'avg'
+          ? `avg ${c.parsed.y.toFixed(2)} Mbps` : `${c.parsed.y.toFixed(2)} Mbps` } } },
+      scales: {
+        x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
+        y: { beginAtZero: true, grid: { color: '#21262d' }, ticks: { color: '#8b949e' },
+             title: { display: true, text: 'Mbps', color: '#8b949e' } }
+      }
+    }
+  });
+}
+
+// Build the two-column measurement pane (mirrors Run Test layout)
+function buildMeasurementPane(e) {
+  const p      = e.params;
+  const proto  = (p.protocol || 'tcp').toUpperCase();
+  const isUdp  = proto === 'UDP';
+  const dir    = p.direction === 'download' ? '↓ Download' : '↑ Upload';
+  const dur    = e.duration_s ? e.duration_s.toFixed(1) + 's' : (p.duration + 's');
+  const bwMbps = parseBandwidthToMbps(p.bandwidth || '');
+  const bwStr  = bwMbps > 0 ? fmtBandwidth(bwMbps) : 'unlimited';
+  const fm     = bps => bps ? (bps / 1e6).toFixed(2) : '—';
+  const hasChart = !!(e.intervals?.length);
+
+  const sendMbps = fm(e.send_bps);
+  const recvMbps = fm(e.recv_bps);
+  const peakMbps = hasChart ? Math.max(...e.intervals.map(b => b/1e6)).toFixed(2) : '—';
+  const avgMbps  = hasChart ? (e.intervals.reduce((a,b)=>a+b,0)/e.intervals.length/1e6).toFixed(2) : '—';
+
+  const settingRows = [
+    ['Server',    p.server],
+    ['Port',      p.port || 5201],
+    ['Protocol',  `<span class="badge ${isUdp ? 'bg-warning text-dark' : 'bg-primary'}">${proto}</span>`],
+    ['Direction', dir],
+    ['Duration',  dur],
+    ['Streams',   p.parallel || 1],
+    ['Bandwidth', bwStr],
+    ...(p.omit_secs ? [['Omit', p.omit_secs + 's']] : []),
+    ...(p.window    ? [['Window', p.window]]         : []),
+    ...(p.mss       ? [['MSS', p.mss]]               : []),
+    ...(p.no_delay  ? [['No-Delay', '✓']]            : []),
+    ...(p.ipv6      ? [['IPv6', '✓']]                : []),
+  ];
+
+  return `<div class="row g-3">
+
+    <!-- LEFT: Settings (same card as Run Test config panel) -->
+    <div class="col-lg-4">
+      <div class="card h-100" style="background:#161b22; border-color:#30363d">
+        <div class="card-body d-flex flex-column">
+          <div class="section-title">Settings</div>
+          <table class="table table-sm table-dark mb-0">
+            <tbody>
+              ${settingRows.map(([k,v]) => `
+                <tr>
+                  <td class="text-muted" style="width:44%;white-space:nowrap">${k}</td>
+                  <td>${v}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          <div class="mt-auto pt-3">
+            <div class="text-muted mb-2" style="font-size:0.75rem">${new Date(e.timestamp).toLocaleString()}</div>
+            <button class="btn btn-outline-primary btn-sm w-100" onclick="recallSettings('${e.id}')">
+              <i class="bi bi-arrow-counterclockwise me-1"></i>Run Again with these settings
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Results (same layout as Run Test right panel) -->
+    <div class="col-lg-8">
+
+      <!-- Stat cards matching Run Test layout -->
+      <div class="row g-2 mb-3">
+        <div class="col-6 col-md-3"><div class="stat-card">
+          <div class="stat-value text-success">${sendMbps}</div>
+          <div class="stat-unit">Mbps</div><div class="stat-label">Send</div>
+        </div></div>
+        <div class="col-6 col-md-3"><div class="stat-card">
+          <div class="stat-value text-info">${recvMbps}</div>
+          <div class="stat-unit">Mbps</div><div class="stat-label">Receive</div>
+        </div></div>
+        <div class="col-6 col-md-3"><div class="stat-card">
+          <div class="stat-value text-warning">${avgMbps}</div>
+          <div class="stat-unit">Mbps</div><div class="stat-label">Average</div>
+        </div></div>
+        <div class="col-6 col-md-3"><div class="stat-card">
+          ${isUdp
+            ? `<div class="stat-value text-danger">${e.lost_percent != null ? e.lost_percent.toFixed(1) : '—'}</div>
+               <div class="stat-unit">% / ${e.jitter_ms != null ? e.jitter_ms.toFixed(2) : '—'}ms</div>
+               <div class="stat-label">Loss / Jitter</div>`
+            : `<div class="stat-value">${peakMbps}</div>
+               <div class="stat-unit">Mbps</div><div class="stat-label">Peak</div>`}
+        </div></div>
+      </div>
+
+      <!-- Chart (matches Run Test chart card) -->
+      ${hasChart
+        ? `<div class="card mb-3" style="background:#161b22; border-color:#30363d">
+             <div class="card-body py-2">
+               <div class="chart-wrap"><canvas id="hchart-${e.id}"></canvas></div>
+             </div>
+           </div>`
+        : `<div class="text-center text-muted py-4 mb-3"
+               style="background:#161b22;border:1px solid #30363d;border-radius:8px;font-size:0.85rem">
+             No interval data recorded
+           </div>`}
+
+      <!-- Result summary (matches Run Test result-card) -->
+      <div class="result-card p-3">
+        <div class="section-title mb-2">Result</div>
+        <div class="row g-3">
+          <div class="col-md-6"><table class="table table-sm table-dark mb-0"><tbody>
+            <tr><td class="text-muted">Send</td><td class="text-success fw-bold">${sendMbps} Mbps</td></tr>
+            <tr><td class="text-muted">Receive</td><td class="text-info fw-bold">${recvMbps} Mbps</td></tr>
+            ${isUdp ? `
+            <tr><td class="text-muted">Jitter</td><td class="text-warning">${e.jitter_ms != null ? e.jitter_ms.toFixed(3)+' ms' : '—'}</td></tr>
+            <tr><td class="text-muted">Pkt Loss</td><td class="text-danger">${e.lost_percent != null ? e.lost_percent.toFixed(2)+'%' : '—'}</td></tr>` : ''}
+          </tbody></table></div>
+          <div class="col-md-6"><table class="table table-sm table-dark mb-0"><tbody>
+            <tr><td class="text-muted">Duration</td><td>${dur}</td></tr>
+            <tr><td class="text-muted">Protocol</td><td>${proto}</td></tr>
+            <tr><td class="text-muted">Streams</td><td>${p.parallel || 1}</td></tr>
+            ${hasChart ? `<tr><td class="text-muted">Average</td><td>${avgMbps} Mbps</td></tr>` : ''}
+          </tbody></table></div>
+        </div>
+      </div>
+
+    </div>
+  </div>`;
+}
+
+async function removeHistEntry(id) {
+  if (histCharts[id]) { histCharts[id].destroy(); delete histCharts[id]; }
+  if (activeTab === id) activeTab = 'run';
+  await fetch('/api/history/' + id, { method: 'DELETE' });
+  await loadHistory();
+}
+
+function recallSettings(id) {
+  const e = histEntryById[id];
+  if (!e) return;
+  const p = e.params;
+
+  // Switch to Run Test tab
+  activeTab = 'run';
+  rebuildTabs();
+
+  // Fill server
+  const sel = document.getElementById('server-select');
+  const match = [...sel.options].find(o => o.value === `${p.server}:${p.port}`);
+  if (match) {
+    sel.value = match.value;
+    document.getElementById('custom-server').style.display = 'none';
+  } else {
+    sel.value = '__custom__';
+    document.getElementById('custom-server').style.display = 'block';
+    document.getElementById('custom-server').value = p.server;
+  }
+  document.getElementById('port').value = p.port || 5201;
+
+  const pe = document.getElementById(p.protocol === 'udp' ? 'proto-udp' : 'proto-tcp');
+  if (pe) pe.checked = true;
+  const de = document.getElementById(p.direction === 'download' ? 'dir-dn' : 'dir-up');
+  if (de) de.checked = true;
+
+  setSlider('duration',  p.duration  || 10);
+  setSlider('parallel',  p.parallel  || 1);
+  setSlider('omit-secs', p.omit_secs || 0);
+  setSlider('bandwidth', parseBandwidthToMbps(p.bandwidth || ''));
+
+  document.getElementById('window').value     = p.window   || '';
+  document.getElementById('mss').value        = p.mss      || 0;
+  document.getElementById('no-delay').checked = !!p.no_delay;
+  document.getElementById('ipv6').checked     = !!p.ipv6;
+
+  saveFormState();
+}
+
+// ─── Tab event delegation (single listener for entire nav) ────────────────────
+document.getElementById('main-tabs').addEventListener('click', e => {
+  const closeSpan = e.target.closest('.hist-tab-close');
+  if (closeSpan) { e.preventDefault(); e.stopPropagation(); removeHistEntry(closeSpan.dataset.id); return; }
+  const navLink = e.target.closest('.nav-link');
+  if (!navLink) return;
+  e.preventDefault();
+  if (navLink.dataset.tab    === 'run') switchTab('run');
+  else if (navLink.dataset.tabId)       switchTab(navLink.dataset.tabId);
+});
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+async function apiFetch(url, options) {
+  try {
+    const r = await fetch(url, options);
+    if (!r.ok) throw new Error(await r.text());
+    return await r.json();
+  } catch(e) { console.error(url, e); return null; }
+}
+
+// ─── Form ─────────────────────────────────────────────────────────────────────
+async function loadServers() {
+  publicServerList = await apiFetch('/api/servers') || [];
+  rebuildServerSelect();
+}
+
+function rebuildServerSelect() {
+  const sel = document.getElementById('server-select');
+  const prevVal = sel.value;
+
+  sel.innerHTML = '<option value="">— select a public server —</option>';
+  publicServerList.forEach(s => {
+    const o = document.createElement('option');
+    o.value = `${s.host}:${s.port}`;
+    o.textContent = `${s.host} — ${s.location}`;
+    sel.appendChild(o);
+  });
+
+  // Unique history servers not already in the public list
+  const existing = new Set(publicServerList.map(s => `${s.host}:${s.port}`));
+  const seen = new Set();
+  const histServers = [];
+  historyEntries.forEach(e => {
+    const port = e.params.port || 5201;
+    const key = `${e.params.server}:${port}`;
+    if (e.params.server && !existing.has(key) && !seen.has(key)) {
+      seen.add(key);
+      histServers.push({ host: e.params.server, port });
+    }
+  });
+  if (histServers.length > 0) {
+    const sep = document.createElement('option');
+    sep.disabled = true;
+    sep.textContent = '─ from history ─';
+    sel.appendChild(sep);
+    histServers.forEach(s => {
+      const o = document.createElement('option');
+      o.value = `${s.host}:${s.port}`;
+      o.textContent = `${s.host}${s.port !== 5201 ? ':' + s.port : ''}`;
+      sel.appendChild(o);
+    });
+  }
+
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = '✎ Custom server…';
+  sel.appendChild(customOpt);
+
+  // Restore previous selection if still available
+  if (prevVal && [...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
+}
+
+function getFormParams() {
+  const sel = document.getElementById('server-select');
+  let server = '', port = parseInt(document.getElementById('port').value) || 5201;
+  if (sel.value === '__custom__') {
+    server = document.getElementById('custom-server').value.trim();
+  } else if (sel.value) {
+    const parts = sel.value.split(':');
+    server = parts[0]; port = parseInt(parts[1]) || port;
+  }
+  const bwVal = parseInt(document.getElementById('bandwidth').value) || 0;
+  return {
+    server, port,
+    protocol:  document.querySelector('input[name="protocol"]:checked')?.value || 'tcp',
+    direction: document.querySelector('input[name="direction"]:checked')?.value || 'upload',
+    duration:  parseInt(document.getElementById('duration').value)  || 10,
+    parallel:  parseInt(document.getElementById('parallel').value)  || 1,
+    bandwidth: bwVal > 0 ? bwVal + 'M' : '',
+    window:    document.getElementById('window').value.trim(),
+    mss:       parseInt(document.getElementById('mss').value) || 0,
+    no_delay:  document.getElementById('no-delay').checked,
+    ipv6:      document.getElementById('ipv6').checked,
+    omit_secs: parseInt(document.getElementById('omit-secs').value) || 0,
+  };
+}
+
+function saveFormState() {
+  try { localStorage.setItem('iperf3-form', JSON.stringify(getFormParams())); } catch(_) {}
+}
+
+function restoreFormState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('iperf3-form') || 'null');
+    if (!saved) return;
+    if (saved.duration  !== undefined) setSlider('duration',  saved.duration);
+    if (saved.parallel  !== undefined) setSlider('parallel',  saved.parallel);
+    if (saved.omit_secs !== undefined) setSlider('omit-secs', saved.omit_secs);
+    setSlider('bandwidth', parseBandwidthToMbps(saved.bandwidth || ''));
+    if (saved.window)   document.getElementById('window').value     = saved.window;
+    if (saved.mss)      document.getElementById('mss').value        = saved.mss;
+    if (saved.no_delay) document.getElementById('no-delay').checked = true;
+    if (saved.ipv6)     document.getElementById('ipv6').checked     = true;
+    if (saved.protocol) {
+      const el = document.getElementById(saved.protocol === 'udp' ? 'proto-udp' : 'proto-tcp');
+      if (el) el.checked = true;
+    }
+    if (saved.direction) {
+      const el = document.getElementById(saved.direction === 'download' ? 'dir-dn' : 'dir-up');
+      if (el) el.checked = true;
+    }
+  } catch(_) {}
+}
+
+// ─── Slider helpers ────────────────────────────────────────────────────────────
+function setSlider(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.value = value;
+  el.dispatchEvent(new Event('input'));
+}
+
+function parseBandwidthToMbps(s) {
+  if (!s) return 0;
+  s = s.trim().toUpperCase();
+  const n = parseFloat(s);
+  if (isNaN(n)) return 0;
+  if (s.endsWith('G')) return Math.round(n * 1000);
+  if (s.endsWith('K')) return Math.round(n / 1000);
+  return Math.round(n);
+}
+
+function fmtBandwidth(mbps) {
+  if (mbps <= 0)                            return 'unlimited';
+  if (mbps >= 1000 && mbps % 1000 === 0)   return (mbps / 1000) + ' Gbps';
+  return mbps + ' Mbps';
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function show(id) { const el = document.getElementById(id); if (el) el.style.display = ''; }
+function hide(id) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
+
+// ─── Form events ──────────────────────────────────────────────────────────────
+document.getElementById('server-select').addEventListener('change', function() {
+  const ci = document.getElementById('custom-server');
+  if (this.value === '__custom__') {
+    ci.style.display = 'block'; document.getElementById('port').value = '5201';
+  } else {
+    ci.style.display = 'none';
+    if (this.value) document.getElementById('port').value = this.value.split(':')[1] || '5201';
+  }
+});
+document.getElementById('duration').addEventListener('input', function() {
+  document.getElementById('duration-label').textContent = this.value; testDuration = parseInt(this.value);
+});
+document.getElementById('parallel').addEventListener('input', function() {
+  document.getElementById('parallel-label').textContent = this.value;
+});
+document.getElementById('bandwidth').addEventListener('input', function() {
+  document.getElementById('bandwidth-label').textContent = fmtBandwidth(parseInt(this.value));
+});
+document.getElementById('omit-secs').addEventListener('input', function() {
+  document.getElementById('omit-label').textContent = this.value;
+});
+
+document.getElementById('btn-run').addEventListener('click', async () => {
+  const params = getFormParams();
+  if (!params.server) { showError('Please select or enter a server.'); return; }
+  testParams = params; testDuration = params.duration;
+  saveFormState(); clearError();
+  const result = await apiFetch('/api/test/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params)
+  });
+  if (!result) return;
+  setRunning(true);
+  switchTab('run');
+  hide('idle-placeholder'); hide('result-card');
+  document.getElementById('terminal').innerHTML = '';
+});
+
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  await fetch('/api/test/stop', { method: 'POST' });
+});
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+(async () => {
+  await loadServers();
+  restoreFormState();
+  await loadHistory();
+  connectSSE();
+})();
+</script>
+</body>
+</html>
